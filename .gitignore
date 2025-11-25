@@ -1,0 +1,7 @@
+# Ignore large data files
+# *.json
+*.h5
+# *.csv
+*.pkl
+__pycache__/
+.DS_Store
