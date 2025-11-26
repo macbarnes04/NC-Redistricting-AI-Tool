@@ -41,7 +41,7 @@ Full Dataset: The full 10,000-map ensemble and trained model weights (model_v2_d
 
 ---
 
-###🛠️ Methodology
+### 🛠️ Methodology
 
 ** Data Generation (MCMC)**
 
