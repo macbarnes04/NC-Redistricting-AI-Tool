@@ -8,9 +8,9 @@ This project audits and improves an Automated Decision System (ADS) designed to 
 
 I built a V2.0 Model that improves upon my [original 2021 paper](https://drive.google.com/file/d/10fSQ548zBNBA5uEeO5kb44-7K02Ld-we/view) by:
 
-Enforcing Contiguity: Using Graph Convolutional Networks (GCNs) to understand spatial relationships.
-Increasing Control: Conditioning generation on a 6-dimensional feature vector (Compactness, Efficiency Gap, Seat Count, Racial Variance, etc.).
-Rigorous Auditing: Testing the model for intrinsic bias, partisan fidelity, and robustness.
+- Enforcing Contiguity: Using Graph Convolutional Networks (GCNs) to understand spatial relationships.
+- Increasing Control: Conditioning generation on a 6-dimensional feature vector (Compactness, Efficiency Gap, Seat Count, Racial Variance, etc.).
+- Visual Auditing: Testing the model for intrinsic bias, partisan fidelity, and robustness.
 
 ---
 
