@@ -1,0 +1,8 @@
+streamlit
+tensorflow-cpu
+geopandas
+pandas
+numpy
+networkx
+matplotlib
+gdown
