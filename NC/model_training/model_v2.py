@@ -1,21 +1,21 @@
 import tensorflow as tf
 import numpy as np
-import matplotlib.pyplot as plt
 import os
 
 # 1. SETUP & DATA LOADING
 # ---------------------------------------------------------
-DATA_PATH = "NC/data/processed_v2_data_100.npz" # Make sure this points to your new file!
+DATA_PATH = "NC/data/processed_v2_data_10k.npz" 
 BATCH_SIZE = 32
-EPOCHS = 20
+EPOCHS = 50  # Increased to allow convergence
 LR = 0.001
+NUM_DISTRICTS = 13 # Confirmed 2016 map
 
 print(f"Loading data from {DATA_PATH}...")
 with np.load(DATA_PATH) as data:
     # Load and process Maps (X)
     raw_maps = data['maps'] # Shape: (N, 2706)
     # One-hot encode maps: (N, 2706) -> (N, 2706, 13)
-    x_train_all = tf.one_hot(raw_maps, depth=13, axis=-1, dtype=tf.float32)
+    x_train_all = tf.one_hot(raw_maps, depth=NUM_DISTRICTS, axis=-1, dtype=tf.float32)
     
     # Load and process Features (Y) - The 6 metrics
     y_train_all = data['features'].astype('float32') # Shape: (N, 6)
@@ -58,42 +58,34 @@ class GraphConv(tf.keras.layers.Layer):
         self.activation = tf.keras.activations.get(activation)
 
     def build(self, input_shape):
-        # Weights: (Input_Feat_Dim, Output_Units)
         self.w = self.add_weight(shape=(input_shape[-1], self.units),
                                  initializer='glorot_uniform',
                                  trainable=True)
 
     def call(self, inputs):
-        # inputs is [Node_Features] (Batch, Nodes, Feats)
-        # 1. Feature Transformation: H * W
         x = tf.matmul(inputs, self.w) 
-        # 2. Feature Propagation: A_norm * (H * W)
-        # We use sparse matrix multiplication logic or broadcasting
-        # Since A is (Nodes, Nodes) and x is (Batch, Nodes, Units)
         out = tf.einsum('nm,bmu->bnu', ADJ_TENSOR, x)
-        
         if self.activation:
             out = self.activation(out)
         return out
 
 # 3. BUILD THE MODEL (GNN-CVAE)
 # ---------------------------------------------------------
-LATENT_DIM = 64 # Size of the "bottleneck" code
+LATENT_DIM = 64 
 
 # --- ENCODER (GNN) ---
-enc_input = tf.keras.Input(shape=(2706, 13))
+enc_input = tf.keras.Input(shape=(2706, NUM_DISTRICTS))
 
-# GNN Layers "see" the map structure
+# GNN Layers
 h = GraphConv(32, activation='relu')(enc_input)
 h = GraphConv(16, activation='relu')(h)
 h = tf.keras.layers.Flatten()(h)
 h = tf.keras.layers.Dense(512, activation='relu')(h)
 
-# Latent Space (Mean & LogVar)
+# Latent Space
 z_mean = tf.keras.layers.Dense(LATENT_DIM)(h)
 z_log_var = tf.keras.layers.Dense(LATENT_DIM)(h)
 
-# Sampling Function
 def sampling(args):
     z_mean, z_log_var = args
     epsilon = tf.random.normal(shape=tf.shape(z_mean))
@@ -101,28 +93,26 @@ def sampling(args):
 
 z = tf.keras.layers.Lambda(sampling)([z_mean, z_log_var])
 
-# Auxiliary Output: Predict the Metrics from the Map (Verification)
+# Auxiliary Output
 metric_pred = tf.keras.layers.Dense(6)(h)
 
 encoder = tf.keras.Model(enc_input, [z_mean, z_log_var, z, metric_pred], name="encoder")
 
 # --- DECODER (MLP) ---
-# Inputs: Latent Vector + Target Metrics (Condition)
 lat_input = tf.keras.Input(shape=(LATENT_DIM,))
-cond_input = tf.keras.Input(shape=(6,)) # The 6-feature vector
+cond_input = tf.keras.Input(shape=(6,)) 
 
 x = tf.keras.layers.Concatenate()([lat_input, cond_input])
 x = tf.keras.layers.Dense(512, activation='relu')(x)
 x = tf.keras.layers.Dense(1024, activation='relu')(x)
-x = tf.keras.layers.Dense(2706 * 13)(x) # Output logits for every node/district
-x = tf.keras.layers.Reshape((2706, 13))(x)
-# Softmax over the 13 districts for each node
+x = tf.keras.layers.Dense(2706 * NUM_DISTRICTS)(x) 
+x = tf.keras.layers.Reshape((2706, NUM_DISTRICTS))(x)
 dec_output = tf.keras.layers.Softmax(axis=-1)(x)
 
 decoder = tf.keras.Model([lat_input, cond_input], dec_output, name="decoder")
 
 # --- FULL CVAE ---
-cvae_input_map = tf.keras.Input(shape=(2706, 13))
+cvae_input_map = tf.keras.Input(shape=(2706, NUM_DISTRICTS))
 cvae_input_metrics = tf.keras.Input(shape=(6,))
 
 z_m, z_lv, z_sample, m_pred = encoder(cvae_input_map)
@@ -132,48 +122,42 @@ cvae = tf.keras.Model([cvae_input_map, cvae_input_metrics],
                       [reconstruction, z_m, z_lv, m_pred], 
                       name="cvae")
 
-# 4. CUSTOM LOSS FUNCTION
+# 4. TUNED LOSS FUNCTION
 # ---------------------------------------------------------
 optimizer = tf.keras.optimizers.Adam(learning_rate=LR)
 
 @tf.function
 def compute_loss(map_true, metric_true, map_pred, z_mean, z_log_var, metric_pred):
-    # 1. Reconstruction Loss (Categorical Crossentropy)
-    # How well does the map match the input?
+    # 1. Reconstruction (Pixel-wise accuracy)
     recon_loss = tf.reduce_mean(
         tf.keras.losses.categorical_crossentropy(map_true, map_pred)
-    ) * 2706 # Scale by number of nodes
+    ) * 2706 
     
     # 2. KL Divergence (Regularization)
     kl_loss = -0.5 * tf.reduce_mean(
         1 + z_log_var - tf.square(z_mean) - tf.exp(z_log_var)
     )
     
-    # 3. Metric Prediction Loss (Auxiliary)
-    # Does the latent space actually capture the metrics?
+    # 3. Metric Prediction (Auxiliary)
     met_loss = tf.reduce_mean(tf.square(metric_true - metric_pred))
     
-    # 4. CONTIGUITY LOSS (The "Smoothness" Term)
-    # We want neighbors to have the same district assignment.
-    # Dot product of a node's distribution with its neighbors' distributions.
-    # Maximize (pred * neighbors) => Minimize -(pred * neighbors)
-    
-    # neighbor_sums = A * pred (Shape: Batch, Nodes, 13)
+    # 4. CONTIGUITY LOSS (Smoothness)
     neighbor_sums = tf.einsum('nm,bmu->bnu', ADJ_RAW, map_pred)
-    
-    # Dot product: sum(pred_i * pred_neighbors_i)
-    # This value is high if a node and its neighbors share the same district
     smoothness = tf.reduce_sum(map_pred * neighbor_sums, axis=[1, 2])
-    contiguity_loss = -tf.reduce_mean(smoothness)
+    # Normalize per node (div by 2706)
+    contiguity_term = -tf.reduce_mean(smoothness) / 2706.0
     
-    # Weights for the terms (You can tune these!)
-    total_loss = recon_loss + (1.5 * kl_loss) + (10.0 * met_loss) + (0.01 * contiguity_loss)
-    
-    return total_loss, recon_loss, contiguity_loss
+    # --- FINAL WEIGHTS ---
+    total_loss = (1.0 * recon_loss) + \
+                 (2.0 * kl_loss) + \
+                 (10.0 * met_loss) + \
+                 (3000.0 * contiguity_term) 
+
+    return total_loss, recon_loss, contiguity_term
 
 # 5. TRAINING LOOP
 # ---------------------------------------------------------
-print("Starting Training...")
+print(f"Starting Training for {EPOCHS} epochs...")
 for epoch in range(EPOCHS):
     total_loss_tracker = 0
     recon_tracker = 0
@@ -182,12 +166,9 @@ for epoch in range(EPOCHS):
     
     for batch_maps, batch_metrics in train_dataset:
         with tf.GradientTape() as tape:
-            # Forward pass
             map_pred, z_m, z_lv, m_pred = cvae([batch_maps, batch_metrics])
-            # Calculate loss
             loss, rc, ct = compute_loss(batch_maps, batch_metrics, map_pred, z_m, z_lv, m_pred)
             
-        # Backward pass
         grads = tape.gradient(loss, cvae.trainable_weights)
         optimizer.apply_gradients(zip(grads, cvae.trainable_weights))
         
@@ -196,12 +177,11 @@ for epoch in range(EPOCHS):
         contig_tracker += ct
         steps += 1
         
-    print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {total_loss_tracker/steps:.2f} | Recon: {recon_tracker/steps:.2f} | Contig: {contig_tracker/steps:.2f}")
+    print(f"Epoch {epoch+1}/{EPOCHS} | Loss: {total_loss_tracker/steps:.2f} | Recon: {recon_tracker/steps:.0f} | Contig: {contig_tracker/steps:.4f}")
 
 # 6. SAVE
 print("Saving Model...")
 cvae.save("model_v2_full.h5")
-# Save encoder/decoder separately for easier inference later
 encoder.save("model_v2_encoder.h5")
 decoder.save("model_v2_decoder.h5")
-print("Done!")
+print("Done! Now run verify_maps.py")

@@ -13,11 +13,11 @@ print(sorted(list(g.nodes[0].keys()))) # print out data column heads
 # 1. SETUP: Define paths
 # ---------------------------------------------------------
 SHAPEFILE_PATH = "NC/NC_precs/NC_precs_all_data.shp"
-OUTPUT_PATH = "processed_v2_data.npz"
+OUTPUT_PATH = "processed_v2_data_10k.npz"
 
 # Logic to switch between full 10k dataset and sample dataset
-if os.path.exists("NC/maps/10KPlansFinal.json"):
-    EXISTING_PLANS_PATH = "NC/maps/10K_Plans.json"
+if os.path.exists("NC/data/10k_Plans.json"):
+    EXISTING_PLANS_PATH = "NC/data/10k_Plans.json"
     print("Using FULL Dataset (10k maps)")
 else:
     # Make sure you renamed your 1000-map file to this!
